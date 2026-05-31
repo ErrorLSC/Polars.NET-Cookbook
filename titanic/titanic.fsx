@@ -137,10 +137,9 @@ let model = pipeline.Fit splits.TrainSet
 let predictions = model.Transform splits.TestSet
 let metrics = mlContext.BinaryClassification.Evaluate(predictions, labelColumnName = "Label")
 
-// 6. 打印评估指标
-printfn "=== 模型评估结果 ==="
-printfn "Accuracy (准确率):  %.2f%%" (metrics.Accuracy * 100.0)
-printfn "AUC (ROC曲线下面积): %.4f" metrics.AreaUnderRocCurve
+printfn "=== Training Results ==="
+printfn "Accuracy:  %.2f%%" (metrics.Accuracy * 100.0)
+printfn "AUC: %.4f" metrics.AreaUnderRocCurve
 printfn "F1 Score:         %.4f" metrics.F1Score
 
 let testDf = DataFrame.ReadCsv(testPath)
