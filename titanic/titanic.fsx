@@ -68,7 +68,7 @@ let calGroupPrefix(df:DataFrame) =
     |> pl.groupBy [pl.col "Prefix";pl.col(nameof schema.Sex)]
     |> pl.agg [
         [nameof schema.Age] |> pl.median |> pl.alias "AgeMedian"]
-    |> pl.sortAscending [pl.col "Prefix";pl.col "Sex"]
+    |> pl.sortAscending [pl.col "Prefix";pl.col (nameof schema.Sex)]
 
 let calTicketGroupSize(df:DataFrame) =
     df
@@ -77,7 +77,7 @@ let calTicketGroupSize(df:DataFrame) =
 
 let addExtraFeature(groupPrefix:DataFrame) (ticketGroupSize:DataFrame) (df:DataFrame) = 
     df
-    |> pl.joinOn groupPrefix [pl.col "Prefix";pl.col "Sex"] JoinType.Left
+    |> pl.joinOn groupPrefix [pl.col "Prefix";pl.col (nameof schema.Sex)] JoinType.Left
     |> pl.joinOn ticketGroupSize [pl.col (nameof schema.Ticket)] JoinType.Left
     |> pl.withColumn(pl.col(nameof schema.Age).Coalesce [pl.col "AgeMedian"])
     |> pl.withColumn(pl.col(nameof schema.Age).Cut [12;19;39;59]
@@ -142,20 +142,19 @@ printfn "Accuracy:  %.2f%%" (metrics.Accuracy * 100.0)
 printfn "AUC: %.4f" metrics.AreaUnderRocCurve
 printfn "F1 Score:         %.4f" metrics.F1Score
 
-let testDf = DataFrame.ReadCsv(testPath)
+let testPredictions = 
+    DataFrame.ReadCsv testPath 
+    |> addBaseFeature 
+    |> addExtraFeature trainGroupPrefix trainTicketGroupSize
+    |> _.AsDataView()
+    |> model.Transform
 
-let testBaseDf = testDf |> addBaseFeature 
-
-let testFinalDf = testBaseDf |> addExtraFeature trainGroupPrefix trainTicketGroupSize
-
-let testPredictions = model.Transform(testFinalDf.AsDataView())
 // testPredictions.Schema |> Seq.iter (fun col -> printfn $"{col.Name} : {col.Type}")
 let keepCols = [| nameof schema.PassengerId; "PredictedLabel"|]
-let cleanView = 
-    mlContext.Transforms.SelectColumns(keepCols)
-        .Fit(testPredictions)
-        .Transform(testPredictions)
-cleanView.ToDataFrame() 
+mlContext.Transforms.SelectColumns(keepCols)
+    .Fit(testPredictions)
+    .Transform(testPredictions)
+    .ToDataFrame() 
 |> pl.select [pl.cs.all().ToExpr() |> pl.castWithNetType<int>]
 |> pl.select [
     pl.col keepCols.[0]
