@@ -14,55 +14,76 @@ open Polars.NET.ML.FSharpExtensions
 open Microsoft.ML
 open Microsoft.ML.Data
 
+// Define file paths for the Kaggle Titanic dataset
 [<Literal>]
 let trainPath = "train.csv"
 
 [<Literal>]
 let testPath = "test.csv"
 
+// Use FSharp.Data CsvProvider extract schema names
 type train = CsvProvider<trainPath>
 
-let dfTrain = DataFrame.ReadCsv trainPath
-
 let schema = Unchecked.defaultof<train.Row>
+
+// Configure Polars formatting options for console output
 pl.setEnvVar "POLARS_FMT_MAX_COLS" "15"
 pl.setEnvVar "POLARS_FMT_MAX_ROWS" "10"
 
+// List of standard name prefixes to keep; less frequent ones will be categorized as "Rare"
 let whiteList = ["Mr";"Mrs";"Master";"Miss"]
 
+/// Step 1: Base Feature Engineering
+/// Extracts name prefixes, handles missing values, and derives initial structural features.
 let addBaseFeature(df:DataFrame) = 
     df
+    // Extract title (e.g., "Mr.", "Miss.") from the Name column
     |> pl.withColumn ((pl.col (nameof schema.Name)).Str.Extract(",\s+(?:[A-Za-z]+\s+)*([A-Za-z]+\.)").Str.StripSuffix "."
             |> pl.alias "Prefix")
-
+    
     |> pl.withColumns([
+        // Combine sibling/spouse and parent/child counts into a single FamilySize metric
         pl.col (nameof schema.SibSp) + pl.col (nameof schema.Parch) + pl.lit 1 
             |> pl.alias "FamilySize"
 
+        // Fill missing Embarked ports with the most common port 'S'
         pl.col(nameof schema.Embarked).FillNull(pl.lit "S")
 
+        // Group rare titles into a single "Rare" category to reduce cardinality
         pl.when' (pl.col("Prefix").IsIn(pl.lit(whiteList).Implode())) 
             |> pl.then'(pl.col "Prefix") 
             |> pl.otherwise(pl.lit "Rare") 
-        
+
+        // Extract the deck letter from the Cabin string (e.g., "C123" -> "C")
         pl.col(nameof schema.Cabin).Str.Extract("^([A-Za-z]+)").FillNull(pl.lit "Unknown") 
             |> pl.alias "Deck"
 
+        // Log-transform Fare to normalize its highly skewed distribution
         pl.col(nameof schema.Fare).FillNull(pl.lit 0).Log1p() 
             |> pl.alias "LogFare"
 
-        pl.when' (pl.col (nameof schema.Sex) .== pl.lit "female" .&& (pl.col (nameof schema.Age) .> pl.lit 18) .&& (pl.col (nameof schema.Parch).> pl.lit 0))
+        // Create a specific domain feature: IsMother (Female, Adult, with children)
+        pl.when' (pl.col (nameof schema.Sex) .== pl.lit "female" 
+            .&& (pl.col (nameof schema.Age) .> pl.lit 18) 
+            .&& (pl.col (nameof schema.Parch).> pl.lit 0))
             |> pl.then'(pl.lit 1)
             |> pl.otherwise(pl.lit 0)
             |> pl.alias "IsMother"
 
+        // Separate alphabetical ticket prefixes from pure numbers
         pl.col(nameof schema.Ticket)
             .Str.Extract("^([A-Za-z./]+[0-9]*)")
             .FillNull(pl.lit "NumOnly")
             |> pl.alias "TicketPrefix"
         ])
-    |> _.Drop(nameof schema.Name,nameof schema.SibSp,nameof schema.Parch,nameof schema.Cabin,nameof schema.Fare)
+    // Drop redundant source columns
+    |> _.Drop(nameof schema.Name,
+            nameof schema.SibSp,
+            nameof schema.Parch,
+            nameof schema.Cabin,
+            nameof schema.Fare)
 
+/// Step 2: Aggregation - Calculate Median Age per Title/Sex group for target imputation
 let calGroupPrefix(df:DataFrame) = 
     df
     |> pl.groupBy [pl.col "Prefix";pl.col(nameof schema.Sex)]
@@ -70,11 +91,14 @@ let calGroupPrefix(df:DataFrame) =
         [nameof schema.Age] |> pl.median |> pl.alias "AgeMedian"]
     |> pl.sortAscending [pl.col "Prefix";pl.col (nameof schema.Sex)]
 
+/// Step 3: Aggregation - Calculate Group Size based on shared Ticket numbers
 let calTicketGroupSize(df:DataFrame) =
     df
     |> pl.groupBy [pl.col(nameof schema.Ticket)]
     |> pl.agg [ pl.len() |> pl.alias "TicketGroupSize" ]
 
+/// Step 4: Advanced Feature Engineering & Imputation
+/// Joins aggregate metrics back to the main DataFrame, bucketizes age, and casts numeric cols to single type
 let addExtraFeature(groupPrefix:DataFrame) (ticketGroupSize:DataFrame) (df:DataFrame) = 
     df
     |> pl.joinOn groupPrefix [pl.col "Prefix";pl.col (nameof schema.Sex)] JoinType.Left
@@ -87,14 +111,9 @@ let addExtraFeature(groupPrefix:DataFrame) (ticketGroupSize:DataFrame) (df:DataF
         |> pl.alias "IsAlone")
     |> _.Drop("AgeMedian",nameof schema.Ticket,nameof schema.Age)
     |> pl.withColumn(pl.cs.numeric().ToExpr() |> pl.castWithNetType<single>)
-    
 
-let dfTrainBase = dfTrain |> addBaseFeature
-let trainGroupPrefix = dfTrainBase |> calGroupPrefix
-let trainTicketGroupSize = dfTrainBase |> calTicketGroupSize
-let dfTrainInter = dfTrainBase |> addExtraFeature trainGroupPrefix trainTicketGroupSize
-
-
+/// Step 5: Finalize Training Data
+/// Formats the target label column as Boolean as expected by ML.NET Binary Classification
 let trainFinalize(df:DataFrame) = 
     df 
     |> pl.withColumns([
@@ -102,46 +121,64 @@ let trainFinalize(df:DataFrame) =
     )
     |> _.Drop("Survived",nameof schema.PassengerId)
 
-let dfTrainFinal = dfTrainInter |> trainFinalize
+// Execute Pipeline: Training Data Preparation
+let dfTrainBase = DataFrame.ReadCsv trainPath |> addBaseFeature
+let trainGroupPrefix = dfTrainBase |> calGroupPrefix
+let trainTicketGroupSize = dfTrainBase |> calTicketGroupSize
+let dfTrainFinal = dfTrainBase |> addExtraFeature trainGroupPrefix trainTicketGroupSize |> trainFinalize
 
+// --- ML.NET Machine Learning Pipeline ---
 let mlContext = MLContext(seed = 42)
+
+// Convert Polars DataFrame into ML.NET IDataView
 let fullData = dfTrainFinal.AsDataView()
 
+// Split data into 80% Train and 20% Validation sets
 let splits = mlContext.Data.TrainTestSplit(fullData, testFraction = 0.2)
 
-let allColumns = dfTrainFinal.Columns
-
+// Define categorical columns that require encoding
 let categoricalCols = [| nameof schema.Sex; nameof schema.Embarked; "Prefix"; "Deck"; "TicketPrefix" |]
 let encodedCols   = categoricalCols |> Array.map (fun c -> c + "_Encoded")
 
+// Filter out features that are purely numeric
 let numericCols = 
-    allColumns 
+    dfTrainFinal.Columns 
     |> Array.filter (fun c -> c <> "Label" && not (Array.contains c categoricalCols))
 
+// Combine numeric and newly encoded features for the trainer
 let allFeatures = Array.append numericCols encodedCols
-let inline append estimator (chain: EstimatorChain<#ITransformer>) =
-        chain.Append estimator
+
+// Map original categorical columns to One-Hot Encoded column outputs
 let ohePairs = 
     categoricalCols 
     |> Array.zip encodedCols 
     |> Array.map (fun (enc, raw) -> InputOutputColumnPair(enc, raw))
 
+// Helper function to avoid explict interface conversion
+let inline append estimator (chain: EstimatorChain<#ITransformer>) =
+        chain.Append estimator
+
+// Build the ML.NET training pipeline
 let pipeline =
     EstimatorChain<ITransformer>()
     |> append (mlContext.Transforms.Categorical.OneHotEncoding ohePairs)
     |> append (mlContext.Transforms.Concatenate("Features", allFeatures))
     |> append (mlContext.BinaryClassification.Trainers.FastTree())
 
+// Train the model
 let model = pipeline.Fit splits.TrainSet
 
+// Evaluate performance on the validation split
 let predictions = model.Transform splits.TestSet
 let metrics = mlContext.BinaryClassification.Evaluate(predictions, labelColumnName = "Label")
 
+// Print out out-of-sample performance validation metrics
 printfn "=== Training Results ==="
 printfn "Accuracy:  %.2f%%" (metrics.Accuracy * 100.0)
 printfn "AUC: %.4f" metrics.AreaUnderRocCurve
 printfn "F1 Score:         %.4f" metrics.F1Score
 
+// --- Inference Pipeline & Submission Generation ---
 let testPredictions = 
     DataFrame.ReadCsv testPath 
     |> addBaseFeature 
@@ -149,15 +186,23 @@ let testPredictions =
     |> _.AsDataView()
     |> model.Transform
 
+// ML.NET will generate duplicated column names in some cases, we can check and decide which columns should be exported
 // testPredictions.Schema |> Seq.iter (fun col -> printfn $"{col.Name} : {col.Type}")
 let keepCols = [| nameof schema.PassengerId; "PredictedLabel"|]
+let exportCols = [| nameof schema.PassengerId; nameof schema.Survived|]
+// Extract predictions, transform columns back to Polars, and format for Kaggle submission
 mlContext.Transforms.SelectColumns(keepCols)
     .Fit(testPredictions)
     .Transform(testPredictions)
     .ToDataFrame() 
-|> pl.select [pl.cs.all().ToExpr() |> pl.castWithNetType<int>]
-|> pl.select [
-    pl.col keepCols.[0]
-    pl.col keepCols.[1] |> pl.alias (nameof schema.Survived)]
+// Map over seq<Series>, casting to int and renaming according to Kaggle's schema 
+|> Seq.mapi (fun i s -> s.Cast<int>().Rename(exportCols.[i]))
+|> pl.dataframe
 |> _.WriteCsv("submission.csv",quoteStyle=QuoteStyle.Never)
 #time "off"
+
+// === Training Results ===
+// Accuracy:  77.71%
+// AUC: 0.8324
+// F1 Score:         0.7176
+// Real: 00:00:01.074, CPU: 00:00:02.401, GC gen0: 3, gen1: 3, gen2: 3
