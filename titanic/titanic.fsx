@@ -1,11 +1,10 @@
 #time "on" // Enable timer
-#r "nuget: Polars.FSharp, 0.5.0"
-#r "nuget: Polars.NET.Core, 0.5.0"
-#r "nuget: Polars.NET.Native.linux-x64, 0.5.0"
+#r "nuget: Polars.FSharp, 0.6.0"
+#r "nuget: Polars.NET.Native.linux-x64, 0.6.0"
 #r "nuget: FSharp.Data"
 #r "nuget: Microsoft.ML"
 #r "nuget: Microsoft.ML.FastTree"
-#r "nuget: Polars.NET.ML, 0.5.0"
+#r "nuget: Polars.NET.ML, 0.6.0"
 
 open FSharp.Data
 open Polars.FSharp
@@ -27,12 +26,14 @@ type train = CsvProvider<trainPath>
 let schema = Unchecked.defaultof<train.Row>
 
 // Configure Polars formatting options for console output
-pl.setEnvVar "POLARS_FMT_MAX_COLS" "15"
-pl.setEnvVar "POLARS_FMT_MAX_ROWS" "10"
+Config.tableCols (NumSet.Set 20)()
+Config.tableRows (NumSet.Set 10)()
 
 // List of standard name prefixes to keep; less frequent ones will be categorized as "Rare"
 let whiteList = ["Mr";"Mrs";"Master";"Miss"]
-
+let dropList = [nameof schema.Name;nameof schema.SibSp;
+            nameof schema.Parch;nameof schema.Cabin;
+            nameof schema.Fare]
 /// Step 1: Base Feature Engineering
 /// Extracts name prefixes, handles missing values, and derives initial structural features.
 let addBaseFeature(df:DataFrame) = 
@@ -77,11 +78,7 @@ let addBaseFeature(df:DataFrame) =
             |> pl.alias "TicketPrefix"
         ])
     // Drop redundant source columns
-    |> _.Drop(nameof schema.Name,
-            nameof schema.SibSp,
-            nameof schema.Parch,
-            nameof schema.Cabin,
-            nameof schema.Fare)
+    |> pl.drop dropList
 
 /// Step 2: Aggregation - Calculate Median Age per Title/Sex group for target imputation
 let calGroupPrefix(df:DataFrame) = 
@@ -109,7 +106,7 @@ let addExtraFeature(groupPrefix:DataFrame) (ticketGroupSize:DataFrame) (df:DataF
         |> pl.alias "AgeBucket")
     |> pl.withColumn(pl.col "FamilySize" .== pl.lit 1L |> pl.castWithNetType<int> 
         |> pl.alias "IsAlone")
-    |> _.Drop("AgeMedian",nameof schema.Ticket,nameof schema.Age)
+    |> pl.drop ["AgeMedian";nameof schema.Ticket;nameof schema.Age]
     |> pl.withColumn(pl.cs.numeric().ToExpr() |> pl.castWithNetType<single>)
 
 /// Step 5: Finalize Training Data
@@ -119,7 +116,7 @@ let trainFinalize(df:DataFrame) =
     |> pl.withColumns([
         pl.col "Survived" |> pl.castWithNetType<bool> |> pl.alias "Label"]
     )
-    |> _.Drop("Survived",nameof schema.PassengerId)
+    |> pl.drop ["Survived";nameof schema.PassengerId]
 
 // Execute Pipeline: Training Data Preparation
 let dfTrainBase = DataFrame.ReadCsv trainPath |> addBaseFeature
@@ -156,7 +153,7 @@ let ohePairs =
 
 // Helper function to avoid explict interface conversion
 let inline append estimator (chain: EstimatorChain<#ITransformer>) =
-        chain.Append estimator
+    chain.Append estimator
 
 // Build the ML.NET training pipeline
 let pipeline =
