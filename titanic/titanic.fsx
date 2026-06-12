@@ -1,6 +1,8 @@
 #time "on" // Enable timer
 #r "nuget: Polars.FSharp, 0.6.0"
 #r "nuget: Polars.NET.Native.linux-x64, 0.6.0"
+#r "nuget: Polars.NET.Native.win-x64, 0.6.0"
+#r "nuget: Polars.NET.Native.osx-arm64, 0.6.0"
 #r "nuget: FSharp.Data"
 #r "nuget: Microsoft.ML"
 #r "nuget: Microsoft.ML.FastTree"
@@ -24,10 +26,6 @@ let testPath = "test.csv"
 type train = CsvProvider<trainPath>
 
 let schema = Unchecked.defaultof<train.Row>
-
-// Configure Polars formatting options for console output
-Config.tableCols (NumSet.Set 20)()
-Config.tableRows (NumSet.Set 10)()
 
 // List of standard name prefixes to keep; less frequent ones will be categorized as "Rare"
 let whiteList = ["Mr";"Mrs";"Master";"Miss"]
@@ -120,6 +118,11 @@ let trainFinalize(df:DataFrame) =
 
 // Execute Pipeline: Training Data Preparation
 let dfTrainBase = DataFrame.ReadCsv trainPath |> addBaseFeature
+// Configure Polars formatting options for console output
+Config.withConfig [Config.tableCols (NumSet.Set 20);Config.tableRows (NumSet.Set 10)] 
+    (
+        fun ()-> dfTrainBase |> pl.show
+        )
 let trainGroupPrefix = dfTrainBase |> calGroupPrefix
 let trainTicketGroupSize = dfTrainBase |> calTicketGroupSize
 let dfTrainFinal = dfTrainBase |> addExtraFeature trainGroupPrefix trainTicketGroupSize |> trainFinalize
