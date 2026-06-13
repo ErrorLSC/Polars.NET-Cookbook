@@ -18,7 +18,7 @@ Model Training: Training a Binary Classification model using ML.NET's FastTree t
 
 Submission: Exporting predictions back to Polars and writing out a Kaggle-compliant submission.csv.
 
-Performance : Real: 00:00:01.074, CPU: 00:00:02.401, GC gen0: 3, gen1: 3, gen2: 3
+Performance : **Real: 00:00:01.074, CPU: 00:00:02.401, GC gen0: 3, gen1: 3, gen2: 3**
 
 ```bash
 
@@ -29,4 +29,24 @@ cd titanic
 
 # Download the Titanic dataset (train.csv and test.csv) into the directory, then run:
 dotnet fsi titanic.fsx
+```
+
+- Olympic Historical EDA (F# Expression & Window Function)
+
+Demonstrates how to conduct complex Exploratory Data Analysis (EDA) on a 270,000-row historical dataset without allocating heavy managed objects.
+
+Data Wrangling: Showcases multi-column lazy group-by, conditional aggregation counters, and cross-row time-series tracking.
+
+Advanced Features: Harnesses Polars' native Window Functions (`.Over()`), frame shifting (`.Shift()`), and distinct counting (`.NUnique()`) through a declarative F# pipeline.
+
+Ecosystem Interop: Shows how to link relational tables using `pl.JoinOnLazy` and manage missing values dynamically by passing native tokens.
+
+Performance: **Real: 00:00:00.260, CPU: 00:00:00.693, GC gen0: 0, gen1: 0, gen2: 0**
+
+```bash
+cd ..
+cd olympic
+
+# Ensure athlete_events.csv and noc_regions.csv are in the directory, then run:
+dotnet fsi olympic.fsx
 ```
