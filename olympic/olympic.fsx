@@ -90,6 +90,31 @@ athleteLf
 |> pl.collect
 |> pl.show
 
+// ====================================================================
+// Rolling Avg of USA Gold Medals  (Polars.FSharp)
+// ====================================================================
+
+let lf3 = LazyFrame.ScanCsv(athletePath, nullValues=["NA"])
+
+lf3
+    |> pl.filterLazy (pl.col(nameof schema.NOC) .== pl.lit "USA")
+    |> pl.filterLazy (pl.col(nameof schema.Season) .== pl.lit "Summer")
+    |> pl.filterLazy (pl.col(nameof schema.Medal) .== pl.lit "Gold")
+
+    |> pl.groupByLazy [ pl.col(nameof schema.Year) ]
+    |> pl.aggLazy [ pl.len().Alias "GoldCount" ]
+
+    |> pl.sortAscendingLazy [ pl.col(nameof schema.Year) ]
+
+    |> pl.withColumnLazy (
+        pl.col("GoldCount")
+          .Cast<float>()
+          .RollingMean(windowSize = Dur.String "3i", minPeriod = 3) 
+          .Alias "Gold_3_Edition_MovingAvg"
+    )
+    |> pl.collect
+    |> pl.show
+
 // ==============================
 // Female Athlete Ratio (Native)
 // ==============================
