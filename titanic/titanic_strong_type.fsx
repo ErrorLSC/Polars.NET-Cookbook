@@ -9,7 +9,6 @@
 #r "nuget: Microsoft.ML.FastTree"
 #r "nuget: Polars.NET.ML, 1.0.1"
 
-open FSharp.Data
 open Polars.FSharp
 open Polars.FSharp.Query
 open System
@@ -53,7 +52,7 @@ let basePassengerQuery (lf: LazyFrame) =
         let famSize = row.SibSp + row.Parch + 1L
         
         // 1. Prefix (Title) Extraction
-        let startIdx = row.Name.IndexOf(", ") + 2
+        let startIdx = row.Name.IndexOf ", " + 2
         let endIdx = row.Name.IndexOf(".", startIdx)
         let rawTitle = 
             if startIdx > 1 && endIdx > startIdx then
