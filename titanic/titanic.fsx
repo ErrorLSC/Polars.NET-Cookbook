@@ -1,12 +1,13 @@
 #time "on" // Enable timer
-#r "nuget: Polars.FSharp, 0.6.0"
-#r "nuget: Polars.NET.Native.linux-x64, 0.6.0"
-#r "nuget: Polars.NET.Native.win-x64, 0.6.0"
-#r "nuget: Polars.NET.Native.osx-arm64, 0.6.0"
+
+#r "nuget: Polars.FSharp, 1.0.1"
+#r "nuget: Polars.NET.Native.linux-x64, 1.0.1"
+#r "nuget: Polars.NET.Native.win-x64, 1.0.1"
+#r "nuget: Polars.NET.Native.osx-arm64, 1.0.1"
 #r "nuget: FSharp.Data"
 #r "nuget: Microsoft.ML"
 #r "nuget: Microsoft.ML.FastTree"
-#r "nuget: Polars.NET.ML, 0.6.0"
+#r "nuget: Polars.NET.ML, 1.0.1"
 
 open FSharp.Data
 open Polars.FSharp
@@ -29,18 +30,18 @@ let schema = Unchecked.defaultof<train.Row>
 
 // List of standard name prefixes to keep; less frequent ones will be categorized as "Rare"
 let whiteList = ["Mr";"Mrs";"Master";"Miss"]
-let dropList = [nameof schema.Name;nameof schema.SibSp;
-            nameof schema.Parch;nameof schema.Cabin;
-            nameof schema.Fare]
+let dropList = [|nameof schema.Name;nameof schema.SibSp;
+            nameof schema.Parch;nameof schema.Cabin;nameof schema.Fare|] |> Array.map (fun s -> pl.col s)
+
 /// Step 1: Base Feature Engineering
 /// Extracts name prefixes, handles missing values, and derives initial structural features.
 let addBaseFeature(df:DataFrame) = 
     df
     // Extract title (e.g., "Mr.", "Miss.") from the Name column
-    |> pl.withColumn ((pl.col (nameof schema.Name)).Str.Extract(",\s+(?:[A-Za-z]+\s+)*([A-Za-z]+\.)").Str.StripSuffix "."
+    |> DataFrame.withColumn ((pl.col (nameof schema.Name)).Str.Extract(",\s+(?:[A-Za-z]+\s+)*([A-Za-z]+\.)").Str.StripSuffix "."
             |> pl.alias "Prefix")
     
-    |> pl.withColumns([
+    |> DataFrame.withColumns([
         // Combine sibling/spouse and parent/child counts into a single FamilySize metric
         pl.col (nameof schema.SibSp) + pl.col (nameof schema.Parch) + pl.lit 1 
             |> pl.alias "FamilySize"
@@ -76,52 +77,51 @@ let addBaseFeature(df:DataFrame) =
             |> pl.alias "TicketPrefix"
         ])
     // Drop redundant source columns
-    |> pl.drop dropList
+    |> DataFrame.dropMany dropList
 
 /// Step 2: Aggregation - Calculate Median Age per Title/Sex group for target imputation
 let calGroupPrefix(df:DataFrame) = 
     df
-    |> pl.groupBy [pl.col "Prefix";pl.col(nameof schema.Sex)]
-    |> pl.agg [
+    |> DataFrame.groupBy [pl.col "Prefix";pl.col(nameof schema.Sex)]
+    |> DataFrame.agg [
         [nameof schema.Age] |> pl.median |> pl.alias "AgeMedian"]
-    |> pl.sortAscending [pl.col "Prefix";pl.col (nameof schema.Sex)]
+    |> DataFrame.sortAscending [pl.col "Prefix";pl.col (nameof schema.Sex)]
 
 /// Step 3: Aggregation - Calculate Group Size based on shared Ticket numbers
 let calTicketGroupSize(df:DataFrame) =
     df
-    |> pl.groupBy [pl.col(nameof schema.Ticket)]
-    |> pl.agg [ pl.len() |> pl.alias "TicketGroupSize" ]
+    |> DataFrame.groupBy [pl.col(nameof schema.Ticket)]
+    |> DataFrame.agg [ pl.len() |> pl.alias "TicketGroupSize" ]
 
 /// Step 4: Advanced Feature Engineering & Imputation
 /// Joins aggregate metrics back to the main DataFrame, bucketizes age, and casts numeric cols to single type
 let addExtraFeature(groupPrefix:DataFrame) (ticketGroupSize:DataFrame) (df:DataFrame) = 
     df
-    |> pl.joinOn groupPrefix [pl.col "Prefix";pl.col (nameof schema.Sex)] JoinType.Left
-    |> pl.joinOn ticketGroupSize [pl.col (nameof schema.Ticket)] JoinType.Left
-    |> pl.withColumn(pl.col(nameof schema.Age).Coalesce [pl.col "AgeMedian"])
-    |> pl.withColumn(pl.col(nameof schema.Age).Cut [12;19;39;59]
+    |> DataFrame.joinOn groupPrefix [pl.col "Prefix";pl.col (nameof schema.Sex)] JoinType.Left
+    |> DataFrame.joinOn ticketGroupSize [pl.col (nameof schema.Ticket)] JoinType.Left
+    |> DataFrame.withColumn(pl.col(nameof schema.Age).Coalesce [pl.col "AgeMedian"])
+    |> DataFrame.withColumn(pl.col(nameof schema.Age).Cut [12;19;39;59]
         |> _.ToPhysical() 
         |> pl.alias "AgeBucket")
-    |> pl.withColumn(pl.col "FamilySize" .== pl.lit 1L |> pl.castWithNetType<int> 
-        |> pl.alias "IsAlone")
-    |> pl.drop ["AgeMedian";nameof schema.Ticket;nameof schema.Age]
-    |> pl.withColumn(pl.cs.numeric().ToExpr() |> pl.castWithNetType<single>)
+    |> DataFrame.withColumn( (pl.col "FamilySize" .== pl.lit 1L).Cast<int>() |> pl.alias "IsAlone")
+    |> DataFrame.dropMany (["AgeMedian";nameof schema.Ticket;nameof schema.Age] |> List.map pl.col)
+    |> DataFrame.withColumn(pl.cs.numeric().ToExpr().Cast<single>())
 
 /// Step 5: Finalize Training Data
 /// Formats the target label column as Boolean as expected by ML.NET Binary Classification
 let trainFinalize(df:DataFrame) = 
     df 
-    |> pl.withColumns([
-        pl.col "Survived" |> pl.castWithNetType<bool> |> pl.alias "Label"]
+    |> DataFrame.withColumns([
+        pl.col("Survived").Cast<bool>().Alias "Label"]
     )
-    |> pl.drop ["Survived";nameof schema.PassengerId]
+    |> DataFrame.dropMany (["Survived";nameof schema.PassengerId] |> List.map pl.col)
 
 // Execute Pipeline: Training Data Preparation
 let dfTrainBase = DataFrame.ReadCsv trainPath |> addBaseFeature
 // Configure Polars formatting options for console output
 Config.withConfig [Config.tableCols (NumSet.Set 20);Config.tableRows (NumSet.Set 10)] 
     (
-        fun ()-> dfTrainBase |> pl.show
+        fun ()-> dfTrainBase |> DataFrame.show
         )
 let trainGroupPrefix = dfTrainBase |> calGroupPrefix
 let trainTicketGroupSize = dfTrainBase |> calTicketGroupSize

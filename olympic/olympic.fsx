@@ -1,15 +1,42 @@
 #time "on" // Enable timer
-#r "nuget: Polars.FSharp, 0.6.0"
-#r "nuget: Polars.NET.Native.linux-x64, 0.6.0"
-#r "nuget: Polars.NET.Native.win-x64, 0.6.0"
-#r "nuget: Polars.NET.Native.osx-arm64, 0.6.0"
+#r "nuget: Polars.FSharp, 1.0.1"
+#r "nuget: Polars.NET.Native.linux-x64, 1.0.1"
+#r "nuget: Polars.NET.Native.win-x64, 1.0.1"
+#r "nuget: Polars.NET.Native.osx-arm64, 1.0.1"
 #r "nuget: FSharp.Data"
 
 open FSharp.Data
 open Polars.FSharp
+open Polars.FSharp.Query
+open System
+open System.Linq
 
 [<Literal>]
 let athletePath = "athlete_events.csv"
+
+type AthleteRecord = {
+    ID: int64
+    Name: string
+    Sex: string
+    Age: int option
+    Height: float option
+    Weight: float option
+    Team: string
+    NOC: string
+    Games: string
+    Year: int
+    Season: string
+    City: string
+    Sport: string
+    Event: string
+    Medal: string
+}
+
+type NOCRegion = {
+    NOC: string
+    region: string
+    notes: string option
+}
 
 [<Literal>]
 let regionsPath = "noc_regions.csv"
@@ -25,19 +52,33 @@ let schema = Unchecked.defaultof<Athlete.Row>
 // ==============================
 let lf1 = LazyFrame.ScanCsv(athletePath,nullValues=["NA"]) 
 
-lf1 
-// GroupBy NOC
-|> pl.groupByLazy [ pl.col (nameof schema.NOC) ] 
-// Aggregate Female 
-|> pl.aggLazy [
-    (pl.col (nameof schema.Sex) .== pl.lit "F").Sum().Alias "FemaleCount"
-    
-    pl.len().Alias "TotalCount"
-]
-|> pl.withColumnLazy (((pl.col "FemaleCount").Cast<float>() / pl.col "TotalCount" * pl.lit 100.0).Round(2u).Alias "FemaleRatio(%)")
-|> pl.sortDescendingLazy [ pl.col "FemaleRatio(%)" ] 
-|> pl.collect 
-|> pl.show
+let baseAgg =
+    query {
+        for row in lf1.AsQueryable<AthleteRecord>() do
+        groupBy row.NOC into g
+        select {|
+            NOC = g.Key
+            FemaleCount = g.Count(fun r -> r.Sex = "F")
+            TotalCount = g.Count()
+        |}
+    }
+
+let femaleRatioQuery =
+    query {
+        for r in baseAgg do
+        let ratio = Math.Round(double r.FemaleCount / double r.TotalCount * 100.0, 2)
+        sortByDescending ratio
+        take 10
+        select {|
+            NOC = r.NOC
+            FemaleCount = r.FemaleCount
+            TotalCount = r.TotalCount
+            FemaleRatio = ratio
+        |}
+    }
+
+femaleRatioQuery |> Query.toDataFrame |> DataFrame.show
+
 
 // ========================================
 // Gold Medal Windowed GrowthRatio (Polars)
@@ -47,48 +88,67 @@ let lf2 = LazyFrame.ScanCsv(athletePath, nullValues=["NA"])
 lf2
 // Cleanup
 |> _.DropNulls(nameof schema.Medal)
-|> pl.filterLazy(pl.col (nameof schema.Season) .== pl.lit "Summer")
+|> LazyFrame.filter (pl.col (nameof schema.Season) .== pl.lit "Summer")
 
 // Aggregate medal numbers for each NOC 
-|> pl.groupByLazy [ pl.col(nameof schema.NOC); pl.col(nameof schema.Year) ]
-|> pl.aggLazy [ pl.len().Alias "MedalCount" ]
+|> LazyFrame.groupBy [ pl.col(nameof schema.NOC); pl.col(nameof schema.Year) ]
+|> LazyFrame.agg [ pl.len().Alias "MedalCount" ]
 
 // Sort by NOC and Year
-|> pl.sortAscendingLazy [ pl.col(nameof schema.NOC); pl.col(nameof schema.Year) ]
+|> LazyFrame.sortAscending [ pl.col(nameof schema.NOC); pl.col(nameof schema.Year) ]
 
 // Window Function
-|> pl.withColumnLazy (
+|> LazyFrame.withColumn (
     pl.col("MedalCount").Shift(1).Over([pl.col(nameof schema.NOC)]).Alias "PrevMedalCount"
 )
 
 // Calc growth rate
-|> pl.withColumnLazy (
+|> LazyFrame.withColumn (
     let change = pl.col("MedalCount").Cast<float>() - pl.col "PrevMedalCount"
     let ratio = change / pl.col "PrevMedalCount" * pl.lit 100.0
     ratio.Round(2u).Alias "GrowthRatio(%)"
 )
 
 // Filter for USA
-|> pl.filterLazy (pl.col(nameof schema.NOC) .== pl.lit "USA")
-|> pl.collect
-|> pl.show
+|> LazyFrame.filter (pl.col(nameof schema.NOC) .== pl.lit "USA")
+|> LazyFrame.collect
+|> DataFrame.show
 
 // =====================================================
 // Best Athlete with Medals in different Sports (Polars)
 // =====================================================
 let athleteLf = LazyFrame.ScanCsv(athletePath, nullValues=["NA"])
-let regionLf = LazyFrame.ScanCsv("noc_regions.csv",nullValues=["NA"])
+let regionLf = LazyFrame.ScanCsv(regionsPath,nullValues=["NA"])
 
-athleteLf
-|> _.DropNulls(nameof schema.Medal)
-|> pl.groupByLazy [ pl.col(nameof schema.Name); pl.col(nameof schema.NOC) ]
-|> pl.aggLazy [ pl.col(nameof schema.Sport).NUnique().Alias "UniqueSportsCount" ]
-|> pl.filterLazy (pl.col "UniqueSportsCount" .>= pl.lit 3)
-|> pl.joinOnLazy regionLf [ pl.col(nameof schema.NOC) ] JoinType.Left
-|> pl.sortDescendingLazy [ pl.col "UniqueSportsCount" ]
-|> pl.selectLazy [pl.col(nameof schema.Name);pl.col "region";pl.col "UniqueSportsCount" ]
-|> pl.collect
-|> pl.show
+let topAthletes =
+    query {
+        for a in athleteLf.AsQueryable<AthleteRecord>() do
+        where (not (String.IsNullOrEmpty a.Medal))
+        groupBy (a.Name, a.NOC) into g
+        let sportsCount = g.Select(fun r -> r.Sport).Distinct().Count()
+        where (sportsCount >= 3)
+        select {|
+            Name = fst g.Key
+            NOC = snd g.Key
+            UniqueSportsCount = sportsCount
+        |}
+    }
+let athleteCrossSportStars =
+    query {
+        for a in topAthletes do
+        leftOuterJoin reg in regionLf.AsQueryable<NOCRegion>() 
+            on (a.NOC = reg.NOC) into joinedRegions
+        for reg in joinedRegions.DefaultIfEmpty() do
+        sortByDescending a.UniqueSportsCount
+        select {|
+            Name = a.Name
+            Region = reg.region
+            UniqueSportsCount = a.UniqueSportsCount
+        |}
+    }
+
+athleteCrossSportStars |> Query.toDataFrame |> DataFrame.show
+
 
 // ====================================================================
 // Rolling Avg of USA Gold Medals  (Polars.FSharp)
@@ -97,137 +157,22 @@ athleteLf
 let lf3 = LazyFrame.ScanCsv(athletePath, nullValues=["NA"])
 
 lf3
-    |> pl.filterLazy (pl.col(nameof schema.NOC) .== pl.lit "USA")
-    |> pl.filterLazy (pl.col(nameof schema.Season) .== pl.lit "Summer")
-    |> pl.filterLazy (pl.col(nameof schema.Medal) .== pl.lit "Gold")
+    |> LazyFrame.filter (pl.col(nameof schema.NOC) .== pl.lit "USA")
+    |> LazyFrame.filter (pl.col(nameof schema.Season) .== pl.lit "Summer")
+    |> LazyFrame.filter (pl.col(nameof schema.Medal) .== pl.lit "Gold")
 
-    |> pl.groupByLazy [ pl.col(nameof schema.Year) ]
-    |> pl.aggLazy [ pl.len().Alias "GoldCount" ]
+    |> LazyFrame.groupBy [ pl.col(nameof schema.Year) ]
+    |> LazyFrame.agg [ pl.len().Alias "GoldCount" ]
 
-    |> pl.sortAscendingLazy [ pl.col(nameof schema.Year) ]
+    |> LazyFrame.sortAscending [ pl.col(nameof schema.Year) ]
 
-    |> pl.withColumnLazy (
+    |> LazyFrame.withColumn (
         pl.col("GoldCount")
           .Cast<float>()
           .RollingMean(windowSize = Dur.String "3i", minPeriod = 3) 
           .Alias "Gold_3_Edition_MovingAvg"
     )
-    |> pl.collect
-    |> pl.show
-
-// ==============================
-// Female Athlete Ratio (Native)
-// ==============================
-// let rows = Athlete.Load(athletePath).Rows
-
-// rows
-// |> Seq.groupBy (fun row -> row.NOC) 
-// |> Seq.map (fun (noc, group) ->
-//     let femaleCount = group |> Seq.filter (fun row -> row.Sex = "F") |> Seq.length
-//     let totalCount = group |> Seq.length
-//     let femaleRatio = float femaleCount / float totalCount * 100.0
-
-//     {| NOC = noc
-//        FemaleCount = femaleCount
-//        TotalCount = totalCount
-//        FemaleRatio = femaleRatio |}) 
-// |> Seq.sortByDescending (fun result -> result.FemaleRatio) 
-// |> Seq.take 5
-// |> Seq.iter (fun r -> 
-//     printfn "NOC: %s | Female: %d | Total: %d | Ratio: %.2f%%" r.NOC r.FemaleCount r.TotalCount r.FemaleRatio)
-
-// =========================================
-// Gold Medal Windowed GrowthRatio (Native)
-// =========================================
-// let rows = Athlete.Load(athletePath).Rows
-
-// rows
-// |> Seq.filter (fun row -> row.Medal <> "NA" && row.Season = "Summer")
-
-// |> Seq.groupBy (fun row -> row.NOC, row.Year)
-// |> Seq.map (fun ((noc, year), group) -> 
-//     {| NOC = noc; Year = year; MedalCount = uint32 (Seq.length group) |})
-
-// |> Seq.groupBy (fun r -> r.NOC)
-// |> Seq.collect (fun (noc, mCountGroup) ->
-//     let sortedByYear = mCountGroup |> Seq.sortBy (fun r -> r.Year) |> Seq.toArray
-    
-//     sortedByYear 
-//     |> Seq.mapi (fun index current ->
-//         let prevCount = 
-//             if index = 0 then System.Nullable() 
-//             else System.Nullable(sortedByYear.[index - 1].MedalCount)
-            
-//         let currentCountFloat = float current.MedalCount
-        
-//         let growthRatio = 
-//             if prevCount.HasValue then 
-//                 let prevFloat = float prevCount.Value
-//                 System.Nullable((currentCountFloat - prevFloat) / prevFloat * 100.0)
-//             else 
-//                 System.Nullable() 
-
-//         {| NOC = current.NOC
-//            Year = current.Year
-//            MedalCount = current.MedalCount
-//            PrevMedalCount = prevCount
-//            GrowthRatio = growthRatio |})
-// )
-
-// |> Seq.filter (fun r -> r.NOC = "USA")
-// |> Seq.sortBy (fun r -> r.Year)
-// |> Seq.iter (fun r ->
-//     let prevStr = if r.PrevMedalCount.HasValue then string r.PrevMedalCount.Value else "null"
-//     let ratioStr = if r.GrowthRatio.HasValue then sprintf "%.6f" r.GrowthRatio.Value else "null"
-//     printfn "NOC: %s | Year: %d | Medal: %d | Prev: %s | Growth: %s" 
-//         r.NOC r.Year r.MedalCount prevStr ratioStr)
-
-// =====================================================
-// Best Athlete with Medals in different Sports (Native)
-// =====================================================
-// let regionMap = 
-//     Region.Load("noc_regions.csv").Rows
-//     |> Seq.map (fun r -> r.NOC, r.Region)
-//     |> Map.ofSeq
-
-// let athleteRows = Athlete.Load(athletePath).Rows
-
-// athleteRows
-// // DropNulls:
-// |> Seq.filter (fun row -> row.Medal <> "NA")
-
-// // GroupByLazy:
-// |> Seq.groupBy (fun row -> row.Name, row.NOC)
-
-// // aggLazy [ NUnique ]:
-// |> Seq.map (fun ((name, noc), group) ->
-//     let uniqueSportsCount = 
-//         group 
-//         |> Seq.map (fun row -> row.Sport) 
-//         |> Seq.distinct 
-//         |> Seq.length
-        
-//     {| Name = name; NOC = noc; UniqueSportsCount = uint32 uniqueSportsCount |})
-
-// // filterLazy:
-// |> Seq.filter (fun r -> r.UniqueSportsCount >= 3u)
-
-// // Join:
-// |> Seq.map (fun leftRow ->
-//     let regionName = 
-//         match regionMap.TryFind leftRow.NOC with
-//         | Some reg -> reg
-//         | None -> null
-
-//     {| Name = leftRow.Name
-//        Region = regionName
-//        UniqueSportsCount = leftRow.UniqueSportsCount |})
-
-// // sortDescendingLazy:
-// |> Seq.sortByDescending (fun r -> r.UniqueSportsCount)
-
-// // selectLazy + show:
-// |> Seq.iter (fun r -> 
-//     printfn "Name: %s | Region: %s | UniqueSports: %d" r.Name r.Region r.UniqueSportsCount)
+    |> LazyFrame.collect
+    |> DataFrame.show
 
 #time "off" 
