@@ -51,3 +51,28 @@ cd olympic
 # Requires athlete_events.csv and noc_regions.csv in the directory
 dotnet fsi olympic.fsx
 ```
+
+---
+
+### 3. TPC-H Benchmark Queries (Q1 – Q22 in F# LINQ)
+
+Full implementation of all 22 TPC-H analytical queries written in F# using `Polars.FSharp.Query` LINQ syntax, running against bundled SF 0.01 Parquet data.
+
+- **Query Scripts**: [`TPC-H/FSharp/`](TPC-H/FSharp/) (`TpchQ1.fsx` – `TpchQ22.fsx`)
+- **Data Definition & Schemas**: [`TPC-H/FSharp/TpchData.fsx`](TPC-H/FSharp/TpchData.fsx)
+- **Dataset**: [`TPC-H/Data/`](TPC-H/Data/) (SF 0.01, 8 tables in Parquet format)
+
+**Key Features**:
+- **Complete Coverage**: All 22 queries implemented via strongly-typed records and F# `query { ... }` computation expressions.
+- **Engine Pushdown**: LINQ expressions compile directly to native Polars logical plans (predicate pushdown, projection pushdown, hash joins, aggregations).
+- **Execution Plan Inspection**: Each script outputs both the query result and the compiled engine plan (`query.Explain()`).
+
+**Execution**:
+```bash
+cd TPC-H/FSharp
+
+# Run individual queries (e.g., Q1, Q6, Q22)
+dotnet fsi TpchQ1.fsx
+dotnet fsi TpchQ6.fsx
+dotnet fsi TpchQ22.fsx
+```
