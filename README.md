@@ -1,52 +1,53 @@
 # Polars.NET Cookbooks
 
-A repository for Polars.NET & Polars.FSharp practical recipes and real-world examples.
+Practical recipes and examples for Polars.NET and Polars.FSharp, provided as executable F# scripts (`.fsx`).
 
-This repository is designed to be a living documentation site. Instead of reading theoretical API docs, you can explore fully reproducible .fsx (F# Scripts) and C# snippets that solve complex, production-grade data engineering and machine learning problems.
+---
 
-## Cookbook Menu
+## Cookbooks
 
-- Titanic ML Pipeline(F# with ML.NET)
+### 1. Titanic ML Pipeline (F# with ML.NET)
 
-Demonstrates how to build a complete, high-performance machine learning pipeline from scratch in 100 lines of F# code.
+An end-to-end binary classification pipeline combining Polars data processing with ML.NET.
 
-Data Wrangling: Advanced feature engineering using Polars.FSharp (Regex extraction, missing value imputation, Log1p normalization, conditional bucketization via pl.when').
+- **Dynamic Expression Version**: [`titanic/titanic.fsx`](titanic/titanic.fsx)  
+  Uses standard Polars expression APIs (`DataFrame.withColumn`, `pl.when'`, regex extraction, median imputation, column selectors).
+- **Strongly Typed Version**: [`titanic/titanic_strong_type.fsx`](titanic/titanic_strong_type.fsx)  
+  Uses `Polars.FSharp.Query` and F# `query { ... }` computation expressions for compile-time schema validation, standard library string/pattern matching pushdown, and strongly-typed record projections, seamlessly transitioning to native Polars `LazyFrame` for group median imputation and numeric binning (`Cut`).
 
-ML.NET Interop: Converting a Polars DataFrame into an ML.NET IDataView via .AsDataView().
+**Pipeline Overview**:
+- **Feature Engineering**: Title extraction, missing value imputation, log-transformation, ticket group aggregation, and categorical encoding.
+- **ML.NET Interop**: Conversion from Polars `DataFrame` to ML.NET `IDataView` via `.AsDataView()`.
+- **Model Training & Evaluation**: FastTree binary classifier evaluated with accuracy, AUC, and F1 score.
+- **Inference & Export**: Test set scoring and Kaggle-compliant `submission.csv` export.
 
-Model Training: Training a Binary Classification model using ML.NET's FastTree trainer.
-
-Submission: Exporting predictions back to Polars and writing out a Kaggle-compliant submission.csv.
-
-Performance : **Real: 00:00:01.074, CPU: 00:00:02.401, GC gen0: 3, gen1: 3, gen2: 3**
-
+**Execution**:
 ```bash
-
-# Clone the repository
-git clone https://github.com/ErrorLSC/Polars.NET-Cookbooks.git
-cd Polars.NET-Cookbooks
 cd titanic
-
-# Download the Titanic dataset (train.csv and test.csv) into the directory, then run:
+# Requires train.csv and test.csv in the directory
 dotnet fsi titanic.fsx
+
+# Or run the strongly-typed LINQ variant:
+dotnet fsi titanic_strong_type.fsx
 ```
 
-- Olympic Historical EDA (F# Expression & Window Function)
+---
 
-Demonstrates how to conduct complex Exploratory Data Analysis (EDA) on a 270,000-row historical dataset without allocating heavy managed objects.
+### 2. Olympic Historical EDA (Expressions & Window Functions)
 
-Data Wrangling: Showcases multi-column lazy group-by, conditional aggregation counters, and cross-row time-series tracking.
+Exploratory data analysis on historical Olympic data (~270,000 records).
 
-Advanced Features: Harnesses Polars' native Window Functions (`.Over()`), frame shifting (`.Shift()`), and distinct counting (`.NUnique()`) through a declarative F# pipeline.
+- **Implementation**: [`olympic/olympic.fsx`](olympic/olympic.fsx)
 
-Ecosystem Interop: Shows how to link relational tables using `pl.JoinOnLazy` and manage missing values dynamically by passing native tokens.
+**Techniques Demonstrated**:
+- Multi-column lazy aggregations and conditional counters.
+- Window functions (`.Over()`) and frame shifting (`.Shift()`) for edition-over-edition growth rate calculations.
+- Relational joins (`JoinType.Left`) and distinct counting (`.NUnique()`).
+- Comparison between Polars native expressions and `Polars.FSharp.Query` LINQ syntax.
 
-Performance: **Real: 00:00:00.260, CPU: 00:00:00.693, GC gen0: 0, gen1: 0, gen2: 0**
-
+**Execution**:
 ```bash
-cd ..
 cd olympic
-
-# Ensure athlete_events.csv and noc_regions.csv are in the directory, then run:
+# Requires athlete_events.csv and noc_regions.csv in the directory
 dotnet fsi olympic.fsx
 ```
